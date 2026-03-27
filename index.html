@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D宇宙沙盒：光影增强版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #ffffff; font-family: 'Microsoft YaHei', sans-serif; }
+        
+        #planet-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 140px;
+            background: linear-gradient(to top, rgba(255,255,255,1) 0%, rgba(255,255,255,0.85) 100%);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(0,0,0,0.05);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 25px;
+            z-index: 100;
+        }
+
+        .planet-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            cursor: grab;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            width: 80px;
+        }
+
+        .planet-item:hover { transform: translateY(-12px) scale(1.1); }
+        .planet-item:active { cursor: grabbing; }
+
+        .planet-icon-canvas {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+            margin-bottom: 10px;
+        }
+
+        .planet-label { 
+            color: #333; 
+            font-size: 13px; 
+            font-weight: 600; 
+            letter-spacing: 0.5px;
+        }
+
+        #hint {
+            position: fixed;
+            top: 25px;
+            width: 100%;
+            text-align: center;
+            color: #999;
+            font-size: 14px;
+            font-weight: 300;
+            letter-spacing: 4px;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        #info-modal {
+            position: fixed;
+            top: 30px;
+            left: 30px;
+            width: 280px;
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.1);
+            border: 1px solid rgba(0,0,0,0.03);
+            display: none;
+            z-index: 101;
+            animation: pop 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        @keyframes pop { from { opacity: 0; transform: translateY(20px) scale(0.9); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        #info-modal h2 { margin: 0 0 12px; font-size: 24px; color: #111; }
+        #info-modal p { margin: 0; color: #666; font-size: 14px; line-height: 1.7; }
+
+        #reset-btn {
+            position: fixed;
+            top: 25px;
+            right: 25px;
+            padding: 12px 24px;
+            background: #fff;
+            border: none;
+            border-radius: 40px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+            color: #666;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+            z-index: 100;
+            transition: all 0.3s;
+        }
+        #reset-btn:hover { background: #111; color: #fff; transform: scale(1.05); }
+    </style>
+</head>
+<body>
+
+<div id="hint">拖拽底部星球到场景：影子效果增强立体感</div>
+<div id="info-modal"><h2 id="m-name"></h2><p id="m-desc"></p></div>
+<button id="reset-btn">清空场景</button>
+<div id="planet-bar"></div>
+
+<script>
+    const PLANET_CONFIG = [
+        { id: 'sun', name: '太阳', color: '#ffcc00', ratio: 109.0, type: 'noise', detailColor: '#ff6600', desc: '太阳系的中心。表面贴图模拟炽热的等离子体。' },
+        { id: 'jupiter', name: '木星', color: '#dbb07d', ratio: 11.2, type: 'stripes', detailColor: '#8b4513', desc: '气态巨行星。条纹贴图还原其高速大气风暴。' },
+        { id: 'saturn', name: '土星', color: '#e8cc97', ratio: 9.45, ring: true, type: 'stripes', detailColor: '#c5a059', desc: '著名的环系星球。' },
+        { id: 'uranus', name: '天王星', color: '#7bc8d4', ratio: 4.01, type: 'haze', detailColor: '#4ea8b5', desc: '冰巨星。已加强青蓝色调，防止在白底消失。' },
+        { id: 'neptune', name: '海王星', color: '#3d5ef8', ratio: 3.88, type: 'haze', detailColor: '#1a2a6c', desc: '深蓝色的海王星。' },
+        { id: 'earth', name: '地球', color: '#2b82c9', ratio: 1.0, type: 'earth', detailColor: '#ffffff', desc: '我们的家园。' },
+        { id: 'venus', name: '金星', color: '#e6b800', ratio: 0.95, type: 'haze', detailColor: '#b38600', desc: '灼热的行星。' },
+        { id: 'mars', name: '火星', color: '#d14b28', ratio: 0.53, type: 'noise', detailColor: '#8b0000', desc: '红色荒漠。' },
+        { id: 'mercury', name: '水星', color: '#999999', ratio: 0.38, type: 'noise', detailColor: '#444444', desc: '最小的行星。' }
+    ];
+
+    let scene, camera, renderer, raycaster, mouse;
+    let planetsInScene = [];
+    let targetCameraZ = 350;
+    let currentCameraZ = 550;
+
+    function drawProceduralSurface(config, ctx, size, renderAsSphere = false) {
+        ctx.save();
+        if (renderAsSphere) {
+            ctx.beginPath();
+            ctx.arc(size/2, size/2, size/2, 0, Math.PI * 2);
+            ctx.clip();
+        }
+        ctx.fillStyle = config.color;
+        ctx.fillRect(0, 0, size, size);
+
+        if (config.type === 'stripes') {
+            for (let i = 0; i < 25; i++) {
+                ctx.fillStyle = i % 2 === 0 ? config.detailColor : 'rgba(255,255,255,0.1)';
+                const h = Math.random() * (size * 0.1) + 5;
+                const y = Math.random() * size;
+                ctx.globalAlpha = Math.random() * 0.6;
+                ctx.fillRect(0, y, size, h);
+            }
+        } else if (config.type === 'noise' || config.type === 'haze') {
+            for (let i = 0; i < 400; i++) {
+                ctx.fillStyle = config.detailColor;
+                ctx.globalAlpha = Math.random() * 0.4;
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const r = Math.random() * (size * 0.1);
+                ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+            }
+        } else if (config.type === 'earth') {
+            ctx.fillStyle = '#2d8a2d'; 
+            for(let i=0; i<15; i++) {
+                ctx.globalAlpha = 0.6;
+                ctx.beginPath(); ctx.arc(Math.random()*size, Math.random()*size, Math.random()*(size*0.2), 0, Math.PI*2); ctx.fill();
+            }
+        }
+
+        if (renderAsSphere) {
+            const shadowGrad = ctx.createRadialGradient(size*0.3, size*0.3, size*0.05, size*0.5, size*0.5, size*0.5);
+            shadowGrad.addColorStop(0, 'rgba(255,255,255,0.2)');
+            shadowGrad.addColorStop(1, 'rgba(0,0,0,0.5)'); 
+            ctx.fillStyle = shadowGrad;
+            ctx.fillRect(0, 0, size, size);
+        }
+        ctx.restore();
+    }
+
+    function createProceduralTexture(config) {
+        const size = 1024; 
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        drawProceduralSurface(config, canvas.getContext('2d'), size, false);
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.anisotropy = 4;
+        return texture;
+    }
+
+    function init3D() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xffffff);
+        
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 100000);
+        
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        
+        // 关键：启用渲染器的阴影计算
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+        document.body.appendChild(renderer.domElement);
+
+        raycaster = new THREE.Raycaster();
+        mouse = new THREE.Vector2();
+
+        // 1. 环境光：提供基础亮度
+        scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+        // 2. 主平行光：负责投射影子
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight.position.set(500, 1500, 500); 
+        dirLight.castShadow = true; 
+        // 阴影参数调优
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.left = -4000;
+        dirLight.shadow.camera.right = 4000;
+        dirLight.shadow.camera.top = 4000;
+        dirLight.shadow.camera.bottom = -4000;
+        dirLight.shadow.camera.near = 10;
+        dirLight.shadow.camera.far = 5000;
+        scene.add(dirLight);
+
+        // 3. 辅助光：增强侧面轮廓
+        const sideLight = new THREE.PointLight(0xffffff, 0.3);
+        sideLight.position.set(-800, 500, 300);
+        scene.add(sideLight);
+
+        // 4. 地面平面：接收掉落的影子
+        const groundGeometry = new THREE.PlaneGeometry(200000, 200000);
+        const groundMaterial = new THREE.ShadowMaterial({ opacity: 0.15 }); 
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = 0;
+        ground.receiveShadow = true; // 开启接收阴影
+        scene.add(ground);
+
+        const bar = document.getElementById('planet-bar');
+        PLANET_CONFIG.forEach(p => {
+            const item = document.createElement('div');
+            item.className = 'planet-item';
+            item.draggable = true;
+            const iconCanvas = document.createElement('canvas');
+            iconCanvas.width = 120; iconCanvas.height = 120;
+            iconCanvas.className = 'planet-icon-canvas';
+            drawProceduralSurface(p, iconCanvas.getContext('2d'), 120, true);
+            item.appendChild(iconCanvas);
+            const label = document.createElement('div');
+            label.className = 'planet-label';
+            label.innerText = p.name;
+            item.appendChild(label);
+            item.addEventListener('dragstart', (e) => e.dataTransfer.setData('id', p.id));
+            bar.appendChild(item);
+        });
+
+        window.addEventListener('resize', onWindowResize);
+        renderer.domElement.addEventListener('dragover', (e) => e.preventDefault());
+        renderer.domElement.addEventListener('drop', onDrop);
+        renderer.domElement.addEventListener('click', onClick);
+        document.getElementById('reset-btn').onclick = resetScene;
+
+        animate();
+    }
+
+    function onDrop(e) {
+        e.preventDefault();
+        const id = e.dataTransfer.getData('id');
+        const config = PLANET_CONFIG.find(p => p.id === id);
+        if (config) {
+            const existingIdx = planetsInScene.findIndex(p => p.userData.config.id === config.id);
+            if (existingIdx !== -1) {
+                scene.remove(planetsInScene[existingIdx]);
+                planetsInScene.splice(existingIdx, 1);
+            }
+            const radius = Math.pow(config.ratio, 0.6) * 20;
+            
+            const material = new THREE.MeshStandardMaterial({ 
+                map: createProceduralTexture(config),
+                roughness: 0.8,
+                metalness: 0.1
+            });
+
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 64, 64), material);
+            mesh.castShadow = true;    // 开启产生阴影
+            mesh.receiveShadow = true; // 开启接收阴影
+            mesh.position.set(0, radius, -5000); 
+            mesh.userData = { config, rolling: true, startTime: performance.now(), baseRadius: radius, targetX: 0 };
+            
+            if (config.ring) {
+                const ring = new THREE.Mesh(
+                    new THREE.RingGeometry(radius * 1.4, radius * 2.5, 64),
+                    new THREE.MeshStandardMaterial({ color: config.color, side: THREE.DoubleSide, transparent: true, opacity: 0.4 })
+                );
+                ring.rotation.x = Math.PI / 2.2;
+                ring.castShadow = true;
+                ring.receiveShadow = true;
+                mesh.add(ring);
+            }
+            planetsInScene.push(mesh);
+            scene.add(mesh);
+            recalculatePositions();
+        }
+    }
+
+    function recalculatePositions() {
+        planetsInScene.sort((a, b) => a.userData.baseRadius - b.userData.baseRadius);
+        let totalWidth = 0;
+        planetsInScene.forEach((p, i) => {
+            totalWidth += p.userData.baseRadius * 2;
+            if (i < planetsInScene.length - 1) totalWidth += 180;
+        });
+        let curX = -totalWidth / 2;
+        planetsInScene.forEach(p => {
+            const r = p.userData.baseRadius;
+            curX += r;
+            p.userData.targetX = curX;
+            curX += r + 180;
+        });
+        targetCameraZ = Math.max(700, totalWidth * 0.95);
+    }
+
+    function onClick(e) {
+        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(planetsInScene);
+        const modal = document.getElementById('info-modal');
+        if (intersects.length > 0) {
+            const cfg = intersects[0].object.userData.config;
+            document.getElementById('m-name').innerText = cfg.name;
+            document.getElementById('m-desc').innerText = cfg.desc;
+            modal.style.display = 'block';
+        } else {
+            modal.style.display = 'none';
+        }
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        planetsInScene.forEach(p => {
+            if (p.userData.rolling) {
+                const progress = Math.min((now - p.userData.startTime) / 2000, 1);
+                const ease = 1 - Math.pow(1 - progress, 3);
+                const newZ = -5000 + (5000 * ease);
+                p.rotation.x -= (newZ - p.position.z) / p.userData.baseRadius;
+                p.position.z = newZ;
+                if (progress === 1) p.userData.rolling = false;
+            }
+            p.position.x += (p.userData.targetX - p.position.x) * 0.1;
+        });
+        
+        currentCameraZ += (targetCameraZ - currentCameraZ) * 0.05;
+        camera.position.set(0, targetCameraZ * 0.45, currentCameraZ);
+        camera.lookAt(0, 60, 0); 
+        renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function resetScene() {
+        planetsInScene.forEach(p => scene.remove(p));
+        planetsInScene = [];
+        targetCameraZ = 350;
+        document.getElementById('info-modal').style.display = 'none';
+    }
+
+    window.onload = init3D;
+</script>
+</body>
+</html>
